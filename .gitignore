@@ -1,0 +1,22 @@
+# Build output
+/bin/
+/dist/
+*.exe
+*.app
+
+# Local runtime data
+/data/
+/tmp/
+*.pfx
+*.p12
+certs.json
+
+# Test artefacts
+*.signed.pdf
+coverage.out
+coverage.html
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/

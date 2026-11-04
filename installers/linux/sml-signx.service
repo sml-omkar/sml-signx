@@ -1,0 +1,29 @@
+[Unit]
+Description=SML SignX PDF signing service
+Documentation=http://localhost:7070/
+After=network.target
+
+[Service]
+Type=simple
+User=sml-signx
+Group=sml-signx
+ExecStart=/opt/sml-signx/sml-signx --headless
+Restart=always
+RestartSec=3
+
+Environment=SML_SIGNING_HOST=127.0.0.1
+Environment=SML_SIGNING_PORT=7070
+Environment=SML_DATA_DIR=/var/lib/sml-signx
+# Protect the API with a shared secret (recommended when not on loopback):
+# Environment=SML_API_KEY=change-me-to-a-long-random-value
+# Optional RFC 3161 timestamp authority:
+# Environment=SML_TSA_URL=https://freetsa.org/tsr
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/sml-signx
+
+[Install]
+WantedBy=multi-user.target
