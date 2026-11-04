@@ -29,7 +29,10 @@ echo "==> Building local binary"
 echo "==> Creating test PFX certificate"
 openssl req -x509 -newkey rsa:2048 \
   -keyout "$OUT/key.pem" -out "$OUT/cert.pem" \
-  -days 365 -nodes -subj "/CN=SML Local Test/O=SML/C=IN" >/dev/null 2>&1
+  -days 365 -nodes -subj "/CN=SML Local Test/O=SML/C=IN" \
+  -addext "basicConstraints=critical,CA:FALSE" \
+  -addext "keyUsage=critical,digitalSignature,nonRepudiation" \
+  -addext "extendedKeyUsage=emailProtection" >/dev/null 2>&1
 openssl pkcs12 -export \
   -out "$OUT/test.pfx" -inkey "$OUT/key.pem" -in "$OUT/cert.pem" \
   -passout "pass:${PFX_PASSWORD}" >/dev/null 2>&1

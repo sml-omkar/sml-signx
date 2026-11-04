@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="$ROOT/tmp/real-pfx"
@@ -8,12 +9,22 @@ API_KEY="${API_KEY:-test-api-key}"
 command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 1; }
 command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }
 
-PFX_PATH="${1:-${PFX_PATH:-}}"
-if [[ -z "$PFX_PATH" ]]; then
-  read -r -p "Path to your .pfx/.p12: " PFX_PATH
+ARG1="${1:-}"
+if [[ "$ARG1" == *.pdf || "$ARG1" == *.PDF ]]; then
+  PDF_PATH="$ARG1"
+  PFX_PATH="${PFX_PATH:-}"
+else
+  PFX_PATH="${ARG1:-${PFX_PATH:-}}"
+  PDF_PATH="${2:-${PDF_PATH:-}}"
 fi
 PFX_PATH="${PFX_PATH/#\~/$HOME}"
-[[ -f "$PFX_PATH" ]] || { echo "File not found: $PFX_PATH" >&2; exit 1; }
+PDF_PATH="${PDF_PATH/#\~/$HOME}"
+
+if [[ -z "$PFX_PATH" ]]; then
+  read -r -p "Path to your .pfx/.p12: " PFX_PATH
+  PFX_PATH="${PFX_PATH/#\~/$HOME}"
+fi
+[[ -f "$PFX_PATH" ]] || { echo "PFX not found: $PFX_PATH" >&2; exit 1; }
 
 read -r -s -p "PFX password: " PFX_PASSWORD
 echo
@@ -23,15 +34,22 @@ SIGNER_NAME="${SIGNER_NAME:-SML Test Signer}"
 DESIGNATION="${DESIGNATION:-Authorized Signatory}"
 REASON="${REASON:-Approved}"
 LOCATION="${LOCATION:-Hyderabad}"
-export PFX_PATH SIGNER_NAME DESIGNATION REASON LOCATION
+SIG_PAGE="${SIG_PAGE:-1}"
+SIG_X="${SIG_X:-50}"
+SIG_Y="${SIG_Y:-50}"
+SIG_W="${SIG_W:-240}"
+SIG_H="${SIG_H:-70}"
+export SIGNER_NAME DESIGNATION REASON LOCATION SIG_PAGE SIG_X SIG_Y SIG_W SIG_H
 
 mkdir -p "$OUT/data"
 
 echo "==> Building local binary"
 (cd "$ROOT" && go build -o bin/sml-signx ./cmd/sml-signx)
 
-if [[ ! -f "$OUT/invoice.pdf" ]]; then
-  python3 - "$OUT/invoice.pdf" <<'PY'
+if [[ -z "$PDF_PATH" ]]; then
+  PDF_PATH="$OUT/invoice.pdf"
+  echo "==> No PDF given, creating a sample PDF"
+  python3 - "$PDF_PATH" <<'PY'
 import sys
 content = b"BT /F1 12 Tf 72 720 Td (SML SignX real certificate test) Tj ET"
 objs = [
@@ -53,7 +71,24 @@ for off in offsets:
 out += ("trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs) + 1, xref)).encode()
 open(sys.argv[1], "wb").write(out)
 PY
+else
+  [[ -f "$PDF_PATH" ]] || { echo "PDF not found: $PDF_PATH" >&2; exit 1; }
+  python3 - "$PDF_PATH" <<'PY'
+import sys
+with open(sys.argv[1], "rb") as f:
+    if f.read(5) != b"%PDF-":
+        sys.exit("Not a PDF file: " + sys.argv[1])
+PY
 fi
+
+PDF_STEM=$(python3 - "$PDF_PATH" <<'PY'
+import os, sys
+base = os.path.basename(sys.argv[1])
+stem, _ = os.path.splitext(base)
+print(stem or base)
+PY
+)
+SIGNED_PATH="$OUT/${PDF_STEM}_signed.pdf"
 
 PORT="${PORT:-$(python3 - <<'PY'
 import socket
@@ -92,69 +127,69 @@ done
 
 echo
 echo "==> Registering certificate"
-REGISTER_BODY=$(PFX_PASSWORD="$PFX_PASSWORD" python3 - <<'PY'
-import json, os
+REGISTER_CODE=$(PFX_PASSWORD="$PFX_PASSWORD" python3 - "$PFX_PATH" <<'PY' | \
+  curl -sS -o "$OUT/register-response.json" -w '%{http_code}' -X POST "$BASE/op/register-pfx" \
+    -H "Content-Type: application/json" \
+    -H "X-API-KEY: $API_KEY" \
+    --data-binary @-
+import json, os, sys
 print(json.dumps({
-    "pfxPath": os.environ["PFX_PATH"],
+    "pfxPath": sys.argv[1],
     "pfxPassword": os.environ["PFX_PASSWORD"],
     "pfxLabel": "Real certificate test",
 }))
 PY
 )
-REGISTER_RESP=$(printf '%s' "$REGISTER_BODY" | curl -sS -w "\n%{http_code}" -X POST "$BASE/op/register-pfx" \
-  -H "Content-Type: application/json" \
-  -H "X-API-KEY: $API_KEY" \
-  --data-binary @-)
-unset REGISTER_BODY
-REGISTER_CODE="${REGISTER_RESP##*$'\n'}"
-REGISTER_DATA="${REGISTER_RESP%$'\n'*}"
 if [[ "$REGISTER_CODE" != "200" ]]; then
   echo "Registration failed (HTTP $REGISTER_CODE):" >&2
-  echo "$REGISTER_DATA" >&2
+  cat "$OUT/register-response.json" >&2
   echo >&2
   cat "$OUT/server.log" >&2
   exit 1
 fi
-printf '%s' "$REGISTER_DATA" | python3 -m json.tool
+python3 -m json.tool "$OUT/register-response.json"
 
 echo
-echo "==> Signing sample PDF"
-SIGN_BODY=$(PFX_PASSWORD="$PFX_PASSWORD" python3 - "$OUT" <<'PY'
+echo "==> Signing PDF: $PDF_PATH"
+SIGN_CODE=$(PFX_PASSWORD="$PFX_PASSWORD" python3 - "$PDF_PATH" "$PFX_PATH" <<'PY' | \
+  curl -sS -o "$OUT/sign-response.json" -w '%{http_code}' -X POST "$BASE/op/sign" \
+    -H "Content-Type: application/json" \
+    -H "X-API-KEY: $API_KEY" \
+    --data-binary @-
 import base64, json, os, sys
-pdf = base64.b64encode(open(os.path.join(sys.argv[1], "invoice.pdf"), "rb").read()).decode()
+pdf = base64.b64encode(open(sys.argv[1], "rb").read()).decode()
 print(json.dumps({
     "pdfBase64": pdf,
-    "pfxPath": os.environ["PFX_PATH"],
+    "pfxPath": sys.argv[2],
     "pfxPassword": os.environ["PFX_PASSWORD"],
     "erpUsername": os.environ["SIGNER_NAME"],
     "designation": os.environ["DESIGNATION"],
     "reason": os.environ["REASON"],
     "location": os.environ["LOCATION"],
-    "signatures": [{"page": 1, "x": 50, "y": 700, "width": 240, "height": 70}],
+    "signatures": [{
+        "page": int(os.environ["SIG_PAGE"]),
+        "x": float(os.environ["SIG_X"]),
+        "y": float(os.environ["SIG_Y"]),
+        "width": float(os.environ["SIG_W"]),
+        "height": float(os.environ["SIG_H"]),
+    }],
 }))
 PY
 )
-SIGN_RESP=$(printf '%s' "$SIGN_BODY" | curl -sS -w "\n%{http_code}" -X POST "$BASE/op/sign" \
-  -H "Content-Type: application/json" \
-  -H "X-API-KEY: $API_KEY" \
-  --data-binary @-)
-unset SIGN_BODY
-SIGN_CODE="${SIGN_RESP##*$'\n'}"
-SIGN_DATA="${SIGN_RESP%$'\n'*}"
 if [[ "$SIGN_CODE" != "200" ]]; then
   echo "Signing failed (HTTP $SIGN_CODE):" >&2
-  echo "$SIGN_DATA" >&2
+  cat "$OUT/sign-response.json" >&2
   echo >&2
   cat "$OUT/server.log" >&2
   exit 1
 fi
 
-printf '%s' "$SIGN_DATA" | python3 -c '
+python3 - "$OUT/sign-response.json" "$SIGNED_PATH" <<'PY'
 import base64, json, sys
-resp = json.load(sys.stdin)
+resp = json.load(open(sys.argv[1]))
 assert resp.get("success") is True, resp
 pdf = base64.b64decode(resp["signedPdfBase64"])
-open(sys.argv[1] + "/invoice_signed.pdf", "wb").write(pdf)
+open(sys.argv[2], "wb").write(pdf)
 print("certCN:        ", resp["certCN"])
 print("certOrg:       ", resp["certOrg"])
 print("signatureCount:", resp["signatureCount"])
@@ -162,16 +197,16 @@ print("signed bytes:  ", len(pdf))
 print("has ByteRange: ", b"/ByteRange" in pdf)
 print("has widget:    ", b"/Widget" in pdf)
 print("has appearance:", b"/AP" in pdf)
-' "$OUT"
-unset SIGN_DATA
+PY
+rm -f "$OUT/register-response.json" "$OUT/sign-response.json"
 
 echo
 echo "PASS"
-echo "Signed PDF: $OUT/invoice_signed.pdf"
+echo "Signed PDF: $SIGNED_PATH"
 if command -v open >/dev/null 2>&1; then
   echo "Opening it now..."
-  open "$OUT/invoice_signed.pdf"
+  open "$SIGNED_PATH"
 elif command -v xdg-open >/dev/null 2>&1; then
   echo "Opening it now..."
-  xdg-open "$OUT/invoice_signed.pdf"
+  xdg-open "$SIGNED_PATH"
 fi

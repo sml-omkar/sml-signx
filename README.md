@@ -226,9 +226,25 @@ To test your real certificate:
 ./scripts/test-real-pfx.sh /path/to/certificate.pfx
 ```
 
+To sign your own PDF instead of the generated sample:
+
+```bash
+./scripts/test-real-pfx.sh /path/to/certificate.pfx "/path/to/Your Invoice.pdf"
+# or let the script prompt for the certificate:
+./scripts/test-real-pfx.sh "/path/to/Your Invoice.pdf"
+```
+
+The signed file is written to `tmp/real-pfx/<name>_signed.pdf` and opened.
+Adjust the stamp position with `SIG_PAGE`, `SIG_X`, `SIG_Y`, `SIG_W`, `SIG_H`
+(PDF points, origin bottom-left):
+
+```bash
+SIG_X=340 SIG_Y=740 SIG_W=220 SIG_H=70 \
+  ./scripts/test-real-pfx.sh cert.pfx "Your Invoice.pdf"
+```
+
 The script prompts for the PFX password without echoing it, never writes it to
-disk, and writes the signed file to `tmp/real-pfx/invoice_signed.pdf`. The
-password is sent only to the locally running service.
+disk, and sends it only to the locally running service.
 
 ## Install
 
